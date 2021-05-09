@@ -1,11 +1,13 @@
 ﻿using AngleSharp;
 using AngleSharp.Dom;
+using AngleSharp.Text;
 using CommandLine;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Resources;
+using System.Text;
 using System.Text.RegularExpressions;
 using ResXResourceWriter = ICSharpCode.Decompiler.Util.ResXResourceWriter;
 
@@ -14,21 +16,71 @@ namespace Resxtractor
     [Verb("create", HelpText = "Create directory.")]
     public class CreateOptions
     {
-
-        [Option('o', "out", HelpText = "Output path", Default = "", Required = true)]
-        public string Output { get; set; }
-
         [Option('d', "directory", HelpText = "Input directory of cshtml files", Default = "", Required = true)]
         public string Directory { get; set; }
 
-        public static int id = 0;
+        [Option('r', "resourceDirectory", HelpText = "Input directory of resources", Required = true)]
+        public string ResourceDirectory { get; set; }
+
+        private static int ReferenciasPuestas = 0;
+        private static int ReferenciasNoPuestas = 0;
 
         public static int Create(CreateOptions opts)
         {
+            Console.WriteLine("1. Crear recursos y poner referencias");
+            Console.WriteLine("2. Crear recursos");
+            Console.WriteLine("3. Poner referencias");
+            Console.WriteLine("¿1, 2 o 3?");
+
+            var r = Console.ReadLine();
+
+            if (r.Equals("1"))
+            {
+                CreateReSources(opts);
+                CreateReferences(opts);
+            }
+            else if (r.Equals("2"))
+            {
+                CreateReSources(opts);
+            }
+            else if (r.Equals("3"))
+            {
+                CreateReferences(opts);
+            }
+            else
+            {
+                Console.WriteLine("Opción inválida");
+                return 1;
+            }
+
+            Console.WriteLine("\n\n----------------- En total se han puesto " + ReferenciasPuestas + " referencias -----------------");
+            Console.WriteLine("\n\n----------------- En total no se han puesto " + ReferenciasNoPuestas + " referencias -----------------");
+
+            return 0;
+        }
+        public static int CreateReSources(CreateOptions opts)
+        {
             if (System.IO.Directory.Exists(opts.Directory))
             {
-                IterateFiles(System.IO.Directory.EnumerateFileSystemEntries(opts.Directory).ToArray());
-                CreateReferences(opts);
+                if (!System.IO.Directory.Exists(opts.ResourceDirectory))
+                {
+                    System.IO.Directory.CreateDirectory(opts.ResourceDirectory);
+                }
+
+                IterateFiles(System.IO.Directory.EnumerateFileSystemEntries(opts.Directory).ToArray(), opts.ResourceDirectory, false);
+            }
+            else
+            {
+                Console.WriteLine("Directory: " + opts.Directory + " doesn't exists.");
+            }
+            return 0;
+        }
+
+        public static int CreateReferences(CreateOptions opts)
+        {
+            if (System.IO.Directory.Exists(opts.Directory))
+            {
+                IterateFiles(System.IO.Directory.EnumerateFileSystemEntries(opts.Directory).ToArray(), opts.ResourceDirectory, true);
             }
             else
             {
@@ -38,50 +90,28 @@ namespace Resxtractor
             return 0;
         }
 
-        public static void IterateFiles(string[] files)
-        {
-            foreach (var file in files)
-            {
-                if (System.IO.File.GetAttributes(file).HasFlag(FileAttributes.Directory))
-                {
-                    IterateFiles(System.IO.Directory.GetFiles(file));
-                }
-                else
-                {
-                    string languageDir = System.IO.Path.GetDirectoryName(file) + "\\..\\..\\" + "Language";
-
-                    if (!System.IO.Directory.Exists(languageDir))
-                    {
-                        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(file) + "\\..\\..\\" + "Language");
-                    }
-
-                    string[] dirName = System.IO.Path.GetDirectoryName(file).Split('\\');
-                    string resourceFile = System.IO.Path.GetDirectoryName(file) + "\\..\\..\\" + "Language\\" + dirName[dirName.Length - 1] + ".resx";
-                    CshtmlToResource(resourceFile, file, System.IO.Path.GetFileNameWithoutExtension(file));
-                }
-            }
-        }
-
-
         public static void CshtmlToResource(string resourceFile, string file, string nameFile)
         {
-
             var config = Configuration.Default;
             var context = BrowsingContext.New(config);
             Stream stream = System.IO.File.OpenRead(file);
             var document = context.OpenAsync(req => req.Content(stream)).Result;
-            var regx = new Regex(@"[(*)]");
+
+            var regx = new Regex(@"[(*)][)]"); 
             var nodes = document.Body.Descendents()
                 .Where(o => o.NodeType == NodeType.Text
+                && !(o.ParentElement is AngleSharp.Html.Dom.IHtmlScriptElement)
                 && o.Text().Trim() != ""
-                && !o.Text().Contains("@")
-                && !o.Text().Contains("{")
                 && !o.Text().Contains("}")
+                && !o.Text().Contains("{")
+                && !o.Text().Contains("//")
+                && !o.Text().Contains("@")
                 && !regx.IsMatch(o.Text().Trim())
                 && !(o.Text().Trim().Length == 1 && Char.IsPunctuation(o.Text().Trim()[0])))
                 .ToList();
 
             var dictionary = new Dictionary<string, string>();
+            int id = 0;
 
             if (nodes != null)
             {
@@ -99,6 +129,7 @@ namespace Resxtractor
 
         public static void CreateOrUpdateResxFile(string path, Dictionary<string, string> resource)
         {
+            int id = 0;
 
             ResXResourceWriter writer = new ResXResourceWriter(path);
 
@@ -111,12 +142,14 @@ namespace Resxtractor
                 while (enumerator.MoveNext())
                 {
                     writer.AddResource(enumerator.Key.ToString(), enumerator.Value.ToString());
+                    id++;
                 }
             }
 
             foreach (var r in resource.Keys)
             {
-                writer.AddResource(r.ToString(), resource[r]);
+                string key = r + "_" + id.ToString();
+                writer.AddResource(key, resource[r]);
             }
 
             writer.Generate();
@@ -125,83 +158,107 @@ namespace Resxtractor
             Console.WriteLine(path + " \nCREATED");
         }
 
-        /***************** REFERENCIAS AL RECURSO ********************/
-
-        public static int CreateReferences(CreateOptions opts)
+        public static void CreateReferences(string resourceFile, string file)
         {
-            if (System.IO.Directory.Exists(opts.Directory))
-            {
-                CheckWords(System.IO.Directory.EnumerateFileSystemEntries(opts.Directory).ToArray());
-            }
-            else
-            {
-                Console.WriteLine("Directory: " + opts.Directory + " doesn't exists.");
-            }
+            int count1 = 0;
+            int count2 = 0;
 
-            return 0;
-        }
-
-        public static void CheckWords(string[] files)
-        {
-            foreach (var file in files)
-            {
-                if (System.IO.File.GetAttributes(file).HasFlag(FileAttributes.Directory))
-                {
-                    CheckWords(System.IO.Directory.GetFiles(file));
-                }
-                else
-                {
-                    CreateReferences(file);
-                }
-            }
-        }
-
-
-        public static void CreateReferences(string file)
-        {
+            Console.WriteLine("¿Poner de forma automática en " + file + "? Y/n");
+            string r1 = Console.ReadLine();
+            string r2 = "";
 
             string[] dirName = System.IO.Path.GetDirectoryName(file).Split('\\');
-            string resourceFile = System.IO.Path.GetDirectoryName(file) + "\\..\\..\\" + "Language\\" + dirName[dirName.Length - 1] + ".resx";
 
             var config = Configuration.Default;
             var context = BrowsingContext.New(config);
             Stream stream = System.IO.File.OpenRead(file);
+
             var document = context.OpenAsync(req => req.Content(stream)).Result;
 
-
             string contents = document.Source.Text;
+
             contents = Regex.Replace(contents, "(?<!\r)\r", "");
 
-            var regx = new Regex(@"[(*)]");
+            var regx = new Regex(@"[(*)][)]");
+
             var nodes = document.Body.Descendents()
                 .Where(o => o.NodeType == NodeType.Text
                 && o.Text().Trim() != ""
-                && !o.Text().Contains("@")
-                && !o.Text().Contains("{")
                 && !o.Text().Contains("}")
+                && !o.Text().Contains("{")
+                && !o.Text().Contains("@")
                 && !regx.IsMatch(o.Text().Trim())
                 && !(o.Text().Trim().Length == 1 && Char.IsPunctuation(o.Text().Trim()[0])))
                 .ToList();
 
             if (nodes != null)
             {
+                string[] resourceDirName = System.IO.Path.GetFullPath(resourceFile).Split('\\');
+
                 foreach (var node in nodes)
                 {
                     string key = CheckIfExists(resourceFile, node.Text().Trim(), System.IO.Path.GetFileNameWithoutExtension(file));
                     if (key != null)
                     {
-                        string[] resourceDirName = System.IO.Path.GetFullPath(resourceFile).Split('\\');
-                        var parentWithoutModify = node.ParentElement.OuterHtml;
-                        node.TextContent = node.TextContent.Replace(node.Text().Trim(), "@" + resourceDirName[resourceDirName.Length - 3] + "." + resourceDirName[dirName.Length - 2] + "." + resourceDirName[resourceDirName.Length - 1].Replace(".resx", "") + "." + key);
-                        contents = contents.Replace(parentWithoutModify, node.ParentElement.OuterHtml);
+
+                        if (!r1.ToUpper().Equals("y".ToUpper()))
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine("\n\n-Quieres cambiar: \n\n");
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine(node.Text().Trim());
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine("\n\n-POR: \n\n");
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine("@" + resourceDirName[resourceDirName.Length - 4] + "." + resourceDirName[resourceDirName.Length - 3] + "." + resourceDirName[resourceDirName.Length - 2] + "." + resourceDirName[resourceDirName.Length - 1].Replace(".resx", "") + "." + key);
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine("\n\n-Y/n");
+                            Console.ForegroundColor = ConsoleColor.White;
+                            r2 = Console.ReadLine();
+                        }
+
+                        var parentWithoutModify = node.ParentElement.OuterHtml.Replace("<br>", "<br />").Replace("<hr>", "<hr />");
+                        string lastcontents = contents;
+
+                        if (r1.ToUpper().Equals("y".ToUpper()) || r2.ToUpper().Equals("y".ToUpper()))
+                        {
+                            node.TextContent = node.TextContent.Replace(node.Text().Trim(), "@" + resourceDirName[resourceDirName.Length - 4] + "." + resourceDirName[resourceDirName.Length - 3] + "." + resourceDirName[resourceDirName.Length - 2] + "." + resourceDirName[resourceDirName.Length - 1].Replace(".resx", "") + "." + key);
+                            contents = contents.ReplaceFirst(parentWithoutModify, node.ParentElement.OuterHtml.Replace("<br>", "<br />").Replace("<hr>", "<hr />"));
+                        }
+
+                        if (lastcontents.Equals(contents))
+                        {
+                            count1++;
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("\n\n" + parentWithoutModify + " \n\n ----------- No se va a cambiar -----------\n\n");
+                            Console.ForegroundColor = ConsoleColor.White;
+                        }
+                        else
+                        {
+                            count2++;
+                            ReferenciasPuestas++;
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("\n\n----------- Se va a cambiar -----------\n\n");
+                            Console.ForegroundColor = ConsoleColor.White;
+                        }
                     }
                 }
             }
 
             document.Close();
             stream.Close();
-            //System.IO.File.WriteAllText(System.IO.Path.GetFullPath(file), contents);
-            System.IO.File.WriteAllText(System.IO.Path.GetFullPath(file), document.Body.OuterHtml);
+
+            if (count1 > 0)
+            {
+                Console.WriteLine("\n\n" + count1.ToString() + " referencias no se han puesto en " + file);
+                ReferenciasNoPuestas += count1;
+            }
+
+            if (count2 > 0)
+            {
+                System.IO.File.WriteAllText(System.IO.Path.GetFullPath(file), contents, Encoding.UTF8);
+            }
+
         }
 
         private static string CheckIfExists(string resourceFile, string htmlValue, string keySubName)
@@ -223,6 +280,40 @@ namespace Resxtractor
             }
 
             return null;
+        }
+
+        public static void IterateFiles(string[] files, string resourceDir, bool references)
+        {
+            foreach (var file in files)
+            {
+                if (System.IO.File.GetAttributes(file).HasFlag(FileAttributes.Directory))
+                {
+                    IterateFiles(System.IO.Directory.GetFiles(file), resourceDir, references);
+                }
+                else
+                {
+                    string[] dirName = System.IO.Path.GetDirectoryName(file).Split('\\');
+
+                    if (!System.IO.Directory.Exists(resourceDir + "\\" + dirName[dirName.Length - 1]))
+                    {
+                        System.IO.Directory.CreateDirectory(resourceDir + "\\" + dirName[dirName.Length - 1]);
+                    }
+
+                    string resourceFile = resourceDir + "\\" + dirName[dirName.Length - 1] + "\\" + dirName[dirName.Length - 1] + ".resx";
+
+                    if (references)
+                    {
+                        if (System.IO.File.Exists(resourceFile))
+                        {
+                            CreateReferences(resourceFile, file);
+                        }
+                    }
+                    else
+                    {
+                        CshtmlToResource(resourceFile, file, System.IO.Path.GetFileNameWithoutExtension(file));
+                    }
+                }
+            }
         }
     }
 }
